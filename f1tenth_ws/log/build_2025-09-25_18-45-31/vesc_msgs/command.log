@@ -1,0 +1,4 @@
+Invoking command in '/home/f1tenth/f1tenth_ws/build/vesc_msgs': /usr/bin/cmake --build /home/f1tenth/f1tenth_ws/build/vesc_msgs -- -j6 -l6
+Invoked command in '/home/f1tenth/f1tenth_ws/build/vesc_msgs' returned '0': /usr/bin/cmake --build /home/f1tenth/f1tenth_ws/build/vesc_msgs -- -j6 -l6
+Invoking command in '/home/f1tenth/f1tenth_ws/build/vesc_msgs': /usr/bin/cmake --install /home/f1tenth/f1tenth_ws/build/vesc_msgs
+Invoked command in '/home/f1tenth/f1tenth_ws/build/vesc_msgs' returned '0': /usr/bin/cmake --install /home/f1tenth/f1tenth_ws/build/vesc_msgs

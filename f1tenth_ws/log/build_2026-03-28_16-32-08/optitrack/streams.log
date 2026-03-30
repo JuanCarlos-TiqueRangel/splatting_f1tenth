@@ -1,0 +1,20 @@
+[1.799s] Invoking command in '/home/f1tenth/f1tenth_ws/src/optitrack': PYTHONPATH=/home/f1tenth/f1tenth_ws/build/optitrack/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/f1tenth/f1tenth_ws/install/optitrack/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/optitrack build --build-base /home/f1tenth/f1tenth_ws/build/optitrack/build install --record /home/f1tenth/f1tenth_ws/build/optitrack/install.log --single-version-externally-managed install_data
+[2.332s] running egg_info
+[2.333s] writing ../../build/optitrack/optitrack.egg-info/PKG-INFO
+[2.334s] writing dependency_links to ../../build/optitrack/optitrack.egg-info/dependency_links.txt
+[2.334s] writing entry points to ../../build/optitrack/optitrack.egg-info/entry_points.txt
+[2.335s] writing requirements to ../../build/optitrack/optitrack.egg-info/requires.txt
+[2.336s] writing top-level names to ../../build/optitrack/optitrack.egg-info/top_level.txt
+[2.342s] reading manifest file '../../build/optitrack/optitrack.egg-info/SOURCES.txt'
+[2.343s] writing manifest file '../../build/optitrack/optitrack.egg-info/SOURCES.txt'
+[2.343s] running build
+[2.343s] running build_py
+[2.343s] running install
+[2.344s] running install_lib
+[2.351s] running install_data
+[2.351s] running install_egg_info
+[2.351s] removing '/home/f1tenth/f1tenth_ws/install/optitrack/lib/python3.10/site-packages/optitrack-0.0.0-py3.10.egg-info' (and everything under it)
+[2.351s] Copying ../../build/optitrack/optitrack.egg-info to /home/f1tenth/f1tenth_ws/install/optitrack/lib/python3.10/site-packages/optitrack-0.0.0-py3.10.egg-info
+[2.353s] running install_scripts
+[2.397s] writing list of installed files to '/home/f1tenth/f1tenth_ws/build/optitrack/install.log'
+[2.484s] Invoked command in '/home/f1tenth/f1tenth_ws/src/optitrack' returned '0': PYTHONPATH=/home/f1tenth/f1tenth_ws/build/optitrack/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/f1tenth/f1tenth_ws/install/optitrack/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/optitrack build --build-base /home/f1tenth/f1tenth_ws/build/optitrack/build install --record /home/f1tenth/f1tenth_ws/build/optitrack/install.log --single-version-externally-managed install_data
