@@ -87,7 +87,7 @@ class OptiTrackMultiNode(Node):
         # Parameters
         self.declare_parameter("client_ip", "192.168.0.37")
         self.declare_parameter("server_ip", "192.168.0.4")
-        self.declare_parameter("robot_ids", [532, 530, 531])
+        self.declare_parameter("robot_ids", [530, 528, 529])
         self.declare_parameter("use_multicast", True)
 
         self.declare_parameter("frame_id", "map")
