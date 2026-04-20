@@ -26,25 +26,25 @@ from scipy.interpolate import CubicSpline
 class mpc_config:
     NXK: int = 4  # length of kinematic state vector: z = [x, y, v, yaw]
     NU: int = 2  # length of input vector: u = [steering speed, acceleration]
-    TK: int = 15  # finite time horizon length - kinematic
+    TK: int = 8  # finite time horizon length - kinematic
 
     # ---------------------------------------------------
     # TODO: you may need to tune the following matrices
     Rk: list = field(
-        default_factory=lambda: np.diag([0.2, 5.0])
-        #default_factory=lambda: np.diag([10.0, 100.0])
+        #default_factory=lambda: np.diag([10.0, 5.0])
+        default_factory=lambda: np.diag([0.1, 100.0])
     )  # input cost matrix, penalty for inputs - [accel, steering_speed]
     Rdk: list = field(
-        default_factory=lambda: np.diag([0.2, 5.0])
-        #default_factory=lambda: np.diag([10.0, 100.0])
+        #default_factory=lambda: np.diag([10.0, 5.0])
+        default_factory=lambda: np.diag([0.1, 100.0])
     )  # input difference cost matrix, penalty for change of inputs - [accel, steering_speed]
     Qk: list = field(
-        default_factory=lambda: np.diag([30.0, 25., 35.0, 20.0])  # levine sim
-        #default_factory=lambda: np.diag([60., 50., 20.0, 20.0])
+        #default_factory=lambda: np.diag([30.0, 25., 35.0, 20.0])  # levine sim
+        default_factory=lambda: np.diag([60., 50., 20.0, 20.0])
     )  # state error cost matrix, for the the next (T) prediction time steps [x, y, v, yaw]
     Qfk: list = field(
-        default_factory=lambda: np.diag([33.5, 25., 35.0, 20.0])  # levine sim
-        #default_factory=lambda: np.diag([60., 50., 20.0, 20.0])
+        #default_factory=lambda: np.diag([33.5, 25., 35.0, 20.0])  # levine sim
+        default_factory=lambda: np.diag([60., 50., 20.0, 20.0])
     )  # final state error matrix, penalty  for the final state constraints: [x, y, v, yaw]
     # ---------------------------------------------------
 
@@ -71,9 +71,9 @@ class mpc_config:
     MIN_STEER: float = -0.4236 #$-0.4236,5236  # maximum steering angle [rad]
     MAX_STEER: float = 0.4236 #0.4236,5236  # maximum steering angle [rad]
     MAX_DSTEER: float = np.deg2rad(180.0)  # maximum steering speed [rad/s]    
-    MAX_SPEED: float = 2.0  # maximum speed [m/s]
+    MAX_SPEED: float = 1.0  # maximum speed [m/s]
     MIN_SPEED: float = 0.0  # minimum backward speed [m/s]
-    MAX_ACCEL: float = 2.0  # maximum acceleration [m/ss]
+    MAX_ACCEL: float = 5.0  # maximum acceleration [m/ss]
 
     # obstacle / CBF tuning
     OBS_RADIUS: float = 0.25      # [m] obstacle radius approximation
@@ -116,13 +116,13 @@ class MPC(Node):
         #self.map_name = 'map_2_f1tenth'
         #self.map_name = 'levine_centerline'
         # self.map_name = 'siccs_first_floor_1'
-        self.map_name = 'square_trajectory'
+        self.map_name = 'square_trajectory_small'
         
         self.enable_drive = True  # enable drive message publishing
 
         # create ROS subscribers and publishers
         # pose_topic = "/pf/viz/inferred_pose" if self.is_real else "/ego_racecar/odom"
-        pose_topic = "/optitrack/object_530/pose" if self.is_real else "/ego_racecar/odom"
+        pose_topic = "/optitrack/object_529/pose" if self.is_real else "/ego_racecar/odom"
         drive_topic = "/drive"
         vis_ref_traj_topic = "/ref_traj_marker"
         vis_waypoints_topic = "/waypoints_marker"
@@ -131,9 +131,9 @@ class MPC(Node):
         self.pose_sub = self.create_subscription(PoseStamped if self.is_real else Odometry, pose_topic, self.pose_callback, 1)
         self.pose_sub  # prevent unused variable warning
 
-        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_1_callback, 10)
-        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_529/odom", self.obs_2_callback, 10)
-        self.obs_3 = self.create_subscription(Odometry, "/optitrack/object_526/odom", self.obs_3_callback, 10)
+        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_527/odom", self.obs_1_callback, 10)
+        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_2_callback, 10)
+        #self.obs_3 = self.create_subscription(Odometry, "/optitrack/object_526/odom", self.obs_3_callback, 10)
 
         self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 1)
         self.drive_msg = AckermannDriveStamped()
