@@ -104,7 +104,7 @@ class MPC(Node):
         # self.map_name = 'siccs_first_floor_1'
         self.map_name = 'square_trajectory'
         
-        self.enable_drive = False  # enable drive message publishing
+        self.enable_drive = True  # enable drive message publishing
 
         # create ROS subscribers and publishers
         # pose_topic = "/pf/viz/inferred_pose" if self.is_real else "/ego_racecar/odom"

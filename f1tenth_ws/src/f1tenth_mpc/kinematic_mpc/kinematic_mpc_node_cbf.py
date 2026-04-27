@@ -108,13 +108,13 @@ class MPC(Node):
         #self.map_name = 'map_2_f1tenth'
         #self.map_name = 'levine_centerline'
         # self.map_name = 'siccs_first_floor_1'
-        self.map_name = 'square_trajectory'
+        self.map_name = 'square_trajectory_small'
         
         self.enable_drive = True  # enable drive message publishing
 
         # create ROS subscribers and publishers
         # pose_topic = "/pf/viz/inferred_pose" if self.is_real else "/ego_racecar/odom"
-        pose_topic = "/optitrack/object_530/pose" if self.is_real else "/ego_racecar/odom"
+        pose_topic = "/optitrack/object_529/pose" if self.is_real else "/ego_racecar/odom"
         drive_topic = "/drive"
         vis_ref_traj_topic = "/ref_traj_marker"
         vis_waypoints_topic = "/waypoints_marker"
@@ -123,9 +123,9 @@ class MPC(Node):
         self.pose_sub = self.create_subscription(PoseStamped if self.is_real else Odometry, pose_topic, self.pose_callback, 1)
         self.pose_sub  # prevent unused variable warning
 
-        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_1_callback, 10)
-        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_529/odom", self.obs_2_callback, 10)
-        self.obs_3 = self.create_subscription(Odometry, "/optitrack/object_526/odom", self.obs_3_callback, 10)
+        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_527/odom", self.obs_1_callback, 10)
+        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_2_callback, 10)
+        #self.obs_3 = self.create_subscription(Odometry, "/optitrack/object_526/odom", self.obs_3_callback, 10)
 
         self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 1)
         self.drive_msg = AckermannDriveStamped()

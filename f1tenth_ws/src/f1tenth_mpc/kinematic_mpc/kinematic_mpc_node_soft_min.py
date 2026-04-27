@@ -26,40 +26,27 @@ from scipy.interpolate import CubicSpline
 class mpc_config:
     NXK: int = 4  # length of kinematic state vector: z = [x, y, v, yaw]
     NU: int = 2  # length of input vector: u = [steering speed, acceleration]
-    TK: int = 8  # finite time horizon length - kinematic
+    TK: int = 15  # finite time horizon length - kinematic
 
     # ---------------------------------------------------
     # TODO: you may need to tune the following matrices
     Rk: list = field(
         #default_factory=lambda: np.diag([10.0, 5.0])
-        default_factory=lambda: np.diag([0.1, 100.0])
+        default_factory=lambda: np.diag([5.0, 35.0])
     )  # input cost matrix, penalty for inputs - [accel, steering_speed]
     Rdk: list = field(
         #default_factory=lambda: np.diag([10.0, 5.0])
-        default_factory=lambda: np.diag([0.1, 100.0])
+        default_factory=lambda: np.diag([1.0, 35.0])
     )  # input difference cost matrix, penalty for change of inputs - [accel, steering_speed]
     Qk: list = field(
         #default_factory=lambda: np.diag([30.0, 25., 35.0, 20.0])  # levine sim
-        default_factory=lambda: np.diag([60., 50., 20.0, 20.0])
+        default_factory=lambda: np.diag([60., 50., 10.0, 50.0])
     )  # state error cost matrix, for the the next (T) prediction time steps [x, y, v, yaw]
     Qfk: list = field(
         #default_factory=lambda: np.diag([33.5, 25., 35.0, 20.0])  # levine sim
-        default_factory=lambda: np.diag([60., 50., 20.0, 20.0])
+        default_factory=lambda: np.diag([60., 50., 10.0, 50.0])
     )  # final state error matrix, penalty  for the final state constraints: [x, y, v, yaw]
     # ---------------------------------------------------
-
-    # N_IND_SEARCH: int = 20  # Search index number
-    # DTK: float = 0.1  # time step [s] kinematic
-    # dlk: float = 0.03  # dist step [m] kinematic
-    # LENGTH: float = 0.58  # Length of the vehicle [m]
-    # WIDTH: float = 0.31  # Width of the vehicle [m]
-    # WB: float = 0.33 #0.3240  # Wheelbase [m]
-    # MIN_STEER: float = -0.4189 #$-0.4236  # maximum steering angle [rad]
-    # MAX_STEER: float = 0.4189 #0.4236  # maximum steering angle [rad]
-    # MAX_DSTEER: float = np.deg2rad(180.0)  # maximum steering speed [rad/s]    
-    # MAX_SPEED: float = 3.5  # maximum speed [m/s]
-    # MIN_SPEED: float = 0.0  # minimum backward speed [m/s]
-    # MAX_ACCEL: float = 1.0  # maximum acceleration [m/ss]
 
 
     N_IND_SEARCH: int = 20  # Search index number
@@ -78,17 +65,31 @@ class mpc_config:
     # obstacle / CBF tuning
     OBS_RADIUS: float = 0.25      # [m] obstacle radius approximation
     SAFETY_MARGIN: float = 0.10   # [m] extra clearance
-    SAFE_RADIUS: float = 0.40
-    CBF_SLACK_WEIGHT: float = 1.0e2
 
     # ---------- soft-min composite CBF tuning ----------
-    SOFTMIN_KAPPA: float = 8.0
-    SOFTMIN_TOPK: int = 3
+    SOFTMIN_KAPPA: float = 5.0
+    BETA_1: float = 1e3
+    SOFTMIN_TOPK: int = 2
     FAR_OBS_THRESHOLD: float = 1.0e5
     SOFTMIN_INACTIVE_VALUE: float = 1.0e3
 
     MIN_PREVIEW_SPEED: float = 0.8
     MIN_PREVIEW_DIND: float = 1.0
+
+
+    # ---------- SCP tuning ----------
+    # SCP_TRUST_XY: float = 0.30      # meters
+    # SCP_TRUST_YAW: float = 0.70     # radians
+    # SCP_TRUST_V: float = 0.50       # m/s
+
+    # Number of SCP iterations.
+    # Use 2 for real time. Use 3 for debugging.
+    SCP_MAX_ITER: int = 2
+
+    # Damping prevents large jumps between SCP iterations.
+    # 1.0 means fully accept new QP solution.
+    # 0.5 means blend old and new.
+    SCP_ALPHA: float = 0.6
 
 
 @dataclass
@@ -116,7 +117,8 @@ class MPC(Node):
         #self.map_name = 'map_2_f1tenth'
         #self.map_name = 'levine_centerline'
         # self.map_name = 'siccs_first_floor_1'
-        self.map_name = 'square_trajectory_small'
+        #self.map_name = 'square_trajectory_small'
+        self.map_name = 'square_trajectory'
         
         self.enable_drive = True  # enable drive message publishing
 
@@ -159,7 +161,7 @@ class MPC(Node):
         #self.ref_speed = self.waypoints[:, 5] * 1.5  # speed profile
         
         # for those who do not have speed profile in the csv file
-        self.ref_speed = np.ones(len(self.waypoints)) * 1.5  # speed profile
+        self.ref_speed = np.ones(len(self.waypoints)) * 0.7  # speed profile
         
         dx = np.gradient(self.ref_pos_x) # for levine is 1 colunm ahead [1]
         dy = np.gradient(self.ref_pos_y) # for levine is 1 colunm ahead [2]
@@ -255,7 +257,7 @@ class MPC(Node):
             steer_output = self.odelta_v[0]
             #speed_output = vehicle_state.v + self.oa[0] * self.config.DTK
             speed_output = vehicle_state.v + self.oa[0] * self.config.DTK
-            speed_output = max(0.0, speed_output)
+            speed_output = np.clip(speed_output, 0.0, self.config.MAX_SPEED)
 
             self.drive_msg.drive.steering_angle = steer_output
             self.drive_msg.drive.speed = 1.0 * speed_output
@@ -323,7 +325,17 @@ class MPC(Node):
             else:
                 dx = vehicle_state.x - self.prev_pose_x
                 dy = vehicle_state.y - self.prev_pose_y
-                vehicle_state.v = math.sqrt(dx * dx + dy * dy) / dt
+                #vehicle_state.v = math.sqrt(dx * dx + dy * dy) / dt
+                raw_v = math.sqrt(dx * dx + dy * dy) / dt
+                raw_v = np.clip(raw_v, 0.0, self.config.MAX_SPEED)
+
+                alpha = 0.3
+                if not hasattr(self, "v_filt"):
+                    self.v_filt = raw_v
+                else:
+                    self.v_filt = alpha * raw_v + (1.0 - alpha) * self.v_filt
+
+                vehicle_state.v = self.v_filt
 
         self.prev_pose_time = curr_time
         self.prev_pose_x = vehicle_state.x
@@ -374,8 +386,6 @@ class MPC(Node):
             np.ones(self.config.TK + 1) * self.config.SOFTMIN_INACTIVE_VALUE
         )
 
-        self.cbf_slack = cvxpy.Variable(self.config.TK + 1, nonneg=True)
-
         # Initializes block diagonal form of R = [R, R, ..., R] (NU*T, NU*T)
         R_block = block_diag(tuple([self.config.Rk] * self.config.TK))  # (2 * 8) x (2 * 8)
 
@@ -395,9 +405,6 @@ class MPC(Node):
         
         # Objective part 1: Influence of the control inputs: Inputs u multiplied by the penalty R
         objective += cvxpy.quad_form(cvxpy.vec(self.uk), R_block)  # # cvxpy.vec() - Flattens the matrix X into a vector in column-major order
-
-        # penalize any relaxation of the obstacle constraints
-        objective += self.config.CBF_SLACK_WEIGHT * cvxpy.sum_squares(self.cbf_slack[1:])
 
         # Objective part 2: Deviation of the vehicle from the reference trajectory weighted by Q, including final Timestep T weighted by Qf
         objective += cvxpy.quad_form(cvxpy.vec(self.xk - self.ref_traj_k), Q_block)
@@ -523,7 +530,7 @@ class MPC(Node):
                 + self.cbf_soft_ay_k[t] * self.xk[1, t]
                 + self.cbf_soft_ac_k[t]
             )
-            constraints.append(h_soft_lin >= -self.cbf_slack[t])
+            constraints.append(h_soft_lin >= 0.0)
 
                 # Create the optimization problem in CVXPY and setup the workspace
                 # Optimization goal: minimize the objective function
@@ -542,6 +549,8 @@ class MPC(Node):
         :pind: Setpoint Index
         :return: reference trajectory ref_traj, reference steering angle
         """
+
+        cyaw = cyaw.copy()
 
         # Create placeholder Arrays for the reference trajectory for T steps
         ref_traj = np.zeros((self.config.NXK, self.config.TK + 1))
@@ -682,21 +691,74 @@ class MPC(Node):
         return valid_obstacles
 
 
+
+    def project_cbf_linearization_point(self, x_bar, y_bar, obstacles):
+        """
+        If the nominal linearization point is inside the closest obstacle's
+        safety region, move the linearization point to the outside boundary.
+
+        This avoids linearizing the CBF from a point deep inside the unsafe set.
+        """
+
+        if len(obstacles) == 0:
+            return x_bar, y_bar
+
+        # Closest obstacle after sorting
+        ox, oy = obstacles[0]
+
+        dx = x_bar - ox
+        dy = y_bar - oy
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        # Project slightly outside the safety boundary
+        buffer = 0.03
+        r_lin = self.safe_radius + buffer
+
+        # If already outside, do not modify the point
+        if dist >= r_lin:
+            return x_bar, y_bar
+
+        # Avoid division by zero if exactly at obstacle center
+        if dist < 1e-6:
+            dx = 0.0
+            dy = -1.0
+            dist = 1.0
+
+        x_safe = ox + r_lin * dx / dist
+        y_safe = oy + r_lin * dy / dist
+
+        return x_safe, y_safe
+
+
+
     def build_softmin_cbf_params(self, path_predict):
         """
         Build affine approximation of the soft-min composite barrier:
+
             h_soft(x) = -(1/kappa) * log(sum_i exp(-kappa * h_i(x)))
 
-        Then linearize it at the nominal predicted point (x_bar, y_bar):
-            h_soft(x,y) ~= a_x * x + a_y * y + a_c
+        where
+
+            h_i(x,y) = (x - ox)^2 + (y - oy)^2 - r_safe^2
+
+        Then linearize h_soft at a projected nominal point (x_bar, y_bar):
+
+            h_soft_lin(x,y) = a_x * x + a_y * y + a_c
+
+        The MPC enforces:
+
+            h_soft_lin(x,y) >= 0
         """
+
         cbf_soft_ax = np.zeros(self.config.TK + 1)
         cbf_soft_ay = np.zeros(self.config.TK + 1)
         cbf_soft_ac = (
-            np.ones(self.config.TK + 1) * self.config.SOFTMIN_INACTIVE_VALUE
+            np.ones(self.config.TK + 1)
+            * self.config.SOFTMIN_INACTIVE_VALUE
         )
 
         obstacles_all = self.get_valid_obstacles()
+
         if len(obstacles_all) == 0:
             return cbf_soft_ax, cbf_soft_ay, cbf_soft_ac
 
@@ -704,15 +766,42 @@ class MPC(Node):
         safe_r2 = self.safe_radius ** 2
 
         for t in range(1, self.config.TK + 1):
-            x_bar = path_predict[0, t]
-            y_bar = path_predict[1, t]
+            x_nom = path_predict[0, t]
+            y_nom = path_predict[1, t]
 
-            # use only the closest obstacles for the composition
+            # Use only closest obstacles in the soft-min
             obstacles_sorted = sorted(
                 obstacles_all,
-                key=lambda obs: (x_bar - obs[0]) ** 2 + (y_bar - obs[1]) ** 2
+                key=lambda obs: (x_nom - obs[0]) ** 2 + (y_nom - obs[1]) ** 2
             )
-            obstacles = obstacles_sorted[:min(self.config.SOFTMIN_TOPK, len(obstacles_sorted))]
+
+            obstacles = obstacles_sorted[
+                :min(self.config.SOFTMIN_TOPK, len(obstacles_sorted))
+            ]
+
+            # Debug only. This should not control the computation.
+            if t == 1 or t == self.config.TK // 2:
+                closest_ox, closest_oy = obstacles[0]
+                dist_nom = math.sqrt(
+                    (x_nom - closest_ox) ** 2
+                    + (y_nom - closest_oy) ** 2
+                )
+                h_nom = dist_nom ** 2 - safe_r2
+
+                print(
+                    f"[CBF DEBUG] t={t}, "
+                    f"x_nom={x_nom:.3f}, y_nom={y_nom:.3f}, "
+                    f"obs=({closest_ox:.3f},{closest_oy:.3f}), "
+                    f"dist={dist_nom:.3f}, h_nom={h_nom:.3f}"
+                )
+
+            # IMPORTANT:
+            # Do not linearize from a point deep inside the unsafe set.
+            x_bar, y_bar = self.project_cbf_linearization_point(
+                x_nom,
+                y_nom,
+                obstacles
+            )
 
             h_list = []
             gx_list = []
@@ -734,27 +823,24 @@ class MPC(Node):
             gx_arr = np.asarray(gx_list)
             gy_arr = np.asarray(gy_list)
 
-            # stable soft-min computation
             h_min = np.min(h_arr)
             exp_shift = np.exp(-kappa * (h_arr - h_min))
             weights = exp_shift / np.sum(exp_shift)
 
-            h_soft = h_min - (1.0 / kappa) * np.log(np.sum(exp_shift))
+            h_soft = h_min - (1.0 / (self.config.BETA_1*kappa)) * np.log(np.sum(exp_shift))
 
-            # gradient of soft-min
             gx_soft = np.sum(weights * gx_arr)
             gy_soft = np.sum(weights * gy_arr)
 
-            # affine linearization:
-            # h_soft(x,y) ~= h_soft_bar + grad^T([x,y]-[x_bar,y_bar])
             cbf_soft_ax[t] = gx_soft
             cbf_soft_ay[t] = gy_soft
             cbf_soft_ac[t] = h_soft - gx_soft * x_bar - gy_soft * y_bar
 
         return cbf_soft_ax, cbf_soft_ay, cbf_soft_ac
+    
 
 
-    def mpc_prob_solve(self, ref_traj, path_predict, x0):
+    def mpc_prob_solve(self, ref_traj, path_predict, x0, od):
         self.x0k.value = x0
 
         A_block = []
@@ -762,7 +848,7 @@ class MPC(Node):
         C_block = []
         for t in range(self.config.TK):
             A, B, C = self.get_model_matrix(
-                path_predict[2, t], path_predict[3, t], 0.0
+                path_predict[2, t], path_predict[3, t], od[t]
             )
             A_block.append(A)
             B_block.append(B)
@@ -786,7 +872,13 @@ class MPC(Node):
 
         # Solve the optimization problem in CVXPY
         # Solver selections: cvxpy.OSQP; cvxpy.GUROBI
-        self.MPC_prob.solve(solver=cvxpy.OSQP, verbose=False, warm_start=True)
+        #self.MPC_prob.solve(solver=cvxpy.OSQP, verbose=False, warm_start=True)
+        try:
+            self.MPC_prob.solve(solver=cvxpy.OSQP, verbose=False, warm_start=True)
+        except cvxpy.error.SolverError as e:
+            print(f"OSQP solver error: {e}")
+            self.mpc_fail_count += 1
+            return None, None, None, None, None, None
 
 
         # print("status =", self.MPC_prob.status)
@@ -822,66 +914,143 @@ class MPC(Node):
         else:
             print(f"MPC solve failed. status={self.MPC_prob.status}")
             self.mpc_fail_count += 1
+            return None, None, None, None, None, None
 
-            if self.last_mpc_ok:
-                print("Using fallback: previous steering + gentle braking")
+        # else:
+        #     print(f"MPC solve failed. status={self.MPC_prob.status}")
+        #     self.mpc_fail_count += 1
 
-                # keep previous successful steering profile
-                odelta = self.last_ok_odelta.copy()
+        #     if self.last_mpc_ok:
+        #         print("Using fallback: previous steering + gentle braking")
 
-                # gently slow down instead of accelerating blindly
-                oa = np.full(self.config.TK, -0.5)
+        #         # keep previous successful steering profile
+        #         odelta = self.last_ok_odelta.copy()
 
-                # return predicted path as placeholder state trajectory
-                ox = path_predict[0, :].copy()
-                oy = path_predict[1, :].copy()
-                ov = path_predict[2, :].copy()
-                oyaw = path_predict[3, :].copy()
+        #         # gently slow down instead of accelerating blindly
+        #         oa = np.full(self.config.TK, -0.5)
 
-            else:
-                print("No previous successful MPC solution. Using safe stop fallback.")
+        #         # return predicted path as placeholder state trajectory
+        #         ox = path_predict[0, :].copy()
+        #         oy = path_predict[1, :].copy()
+        #         ov = path_predict[2, :].copy()
+        #         oyaw = path_predict[3, :].copy()
 
-                odelta = np.zeros(self.config.TK)
-                oa = np.full(self.config.TK, -0.5)
+        #     else:
+        #         print("No previous successful MPC solution. Using safe stop fallback.")
 
-                ox = path_predict[0, :].copy()
-                oy = path_predict[1, :].copy()
-                ov = path_predict[2, :].copy()
-                oyaw = path_predict[3, :].copy()
+        #         odelta = np.zeros(self.config.TK)
+        #         oa = np.full(self.config.TK, -0.5)
+
+        #         ox = path_predict[0, :].copy()
+        #         oy = path_predict[1, :].copy()
+        #         ov = path_predict[2, :].copy()
+        #         oyaw = path_predict[3, :].copy()
 
         return oa, odelta, ox, oy, oyaw, ov
 
 
+
+
     def linear_mpc_control(self, ref_path, x0, oa, od):
         """
-        MPC control with updating operational point iteraitvely
-        :param ref_path: reference trajectory in T steps
-        :param x0: initial state vector
-        :param oa: acceleration of T steps of last time
-        :param od: delta of T steps of last time
+        Sequential convex MPC.
+
+        We solve several convex QPs.
+        Each QP is built by linearizing the dynamics and soft-min CBF
+        around the latest predicted trajectory.
         """
 
+        # -----------------------------
+        # 1) Initial control guess
+        # -----------------------------
         if oa is None or od is None:
-            oa = [0.8] * self.config.TK
-            od = [0.0] * self.config.TK
+            oa = np.ones(self.config.TK) * 0.2
+            od = np.zeros(self.config.TK)
+        else:
+            oa = np.asarray(oa).copy()
+            od = np.asarray(od).copy()
 
-        # Call the Motion Prediction function: Predict the vehicle motion for x-steps
-        path_predict = self.predict_motion(x0, oa, od, ref_path)
-        # sth to be done to fix the path?
-        self.visualize_pred_path_in_rviz(path_predict)
+        # Number of SCP iterations.
+        max_scp_iter = self.config.SCP_MAX_ITER
 
-        poa, pod = oa[:], od[:]
+        # Damping prevents large jumps between SCP iterations.
+        alpha = self.config.SCP_ALPHA
 
-        # Run the MPC optimization: Create and solve the optimization problem
-        mpc_a, mpc_delta, mpc_x, mpc_y, mpc_yaw, mpc_v = self.mpc_prob_solve(
-            ref_path, path_predict, x0
-        )
-        
-        # mpc_a, mpc_delta, mpc_x, mpc_y, mpc_yaw, mpc_v = self.mpc_prob_solve(
-        #     ref_path, path_predict, x0, oa, od
-        # )
+        best_a = oa.copy()
+        best_delta = od.copy()
+        best_x = None
+        best_y = None
+        best_yaw = None
+        best_v = None
+        final_path_predict = None
 
-        return mpc_a, mpc_delta, mpc_x, mpc_y, mpc_yaw, mpc_v, path_predict
+        for scp_it in range(max_scp_iter):
+
+            # ---------------------------------------
+            # 2) Nonlinear rollout with current guess
+            # ---------------------------------------
+            path_predict = self.predict_motion(x0, oa, od, ref_path)
+            final_path_predict = path_predict
+
+            # ---------------------------------------
+            # 3) Solve one convexified MPC problem
+            # Dynamics and CBF are linearized inside
+            # mpc_prob_solve() using path_predict and od
+            # ---------------------------------------
+            new_a, new_delta, mpc_x, mpc_y, mpc_yaw, mpc_v = self.mpc_prob_solve(
+                ref_path, path_predict, x0, od)
+
+            # If solver returned None, stop SCP
+            if new_a is None or new_delta is None:
+                break
+
+            new_a = np.asarray(new_a).copy()
+            new_delta = np.asarray(new_delta).copy()
+
+            # ---------------------------------------
+            # 4) Damped update
+            # ---------------------------------------
+            da = np.linalg.norm(new_a - oa)
+            dd = np.linalg.norm(new_delta - od)
+
+            oa = alpha * new_a + (1.0 - alpha) * oa
+            od = alpha * new_delta + (1.0 - alpha) * od
+
+            best_a = oa.copy()
+            best_delta = od.copy()
+            best_x = mpc_x
+            best_y = mpc_y
+            best_yaw = mpc_yaw
+            best_v = mpc_v
+
+            # ---------------------------------------
+            # 5) Optional convergence check
+            # ---------------------------------------
+            if da < 1e-2 and dd < 1e-2:
+                break
+
+        if best_x is None:
+            print("SCP hard soft-min MPC infeasible. Using safe stop.")
+
+            best_a = np.full(self.config.TK, -self.config.MAX_ACCEL)
+            best_delta = np.zeros(self.config.TK)
+
+            final_path_predict = self.predict_motion(x0, best_a, best_delta, ref_path)
+
+            best_x = final_path_predict[0, :]
+            best_y = final_path_predict[1, :]
+            best_v = final_path_predict[2, :]
+            best_yaw = final_path_predict[3, :]
+
+        # Visualize only once, not inside every SCP iteration
+        if final_path_predict is not None:
+            self.visualize_pred_path_in_rviz(final_path_predict)
+
+        return best_a, best_delta, best_x, best_y, best_yaw, best_v, final_path_predict
+
+
+
+
 
     # visualization
     def visualize_waypoints_in_rviz(self):
