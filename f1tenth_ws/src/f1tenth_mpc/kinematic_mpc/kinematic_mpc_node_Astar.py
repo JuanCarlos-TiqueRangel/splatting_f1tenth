@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import heapq
 import numpy as np
 from dataclasses import dataclass, field
 import cvxpy
@@ -26,7 +27,7 @@ from scipy.interpolate import CubicSpline
 class mpc_config:
     NXK: int = 4  # length of kinematic state vector: z = [x, y, v, yaw]
     NU: int = 2  # length of input vector: u = [steering speed, acceleration]
-    TK: int = 15  # finite time horizon length - kinematic
+    TK: int = 20  # finite time horizon length - kinematic
 
     # ---------------------------------------------------
     # TODO: you may need to tune the following matrices
@@ -36,15 +37,15 @@ class mpc_config:
     )  # input cost matrix, penalty for inputs - [accel, steering_speed]
     Rdk: list = field(
         #default_factory=lambda: np.diag([10.0, 5.0])
-        default_factory=lambda: np.diag([5.0, 35.0])
+        default_factory=lambda: np.diag([1.0, 35.0])
     )  # input difference cost matrix, penalty for change of inputs - [accel, steering_speed]
     Qk: list = field(
         #default_factory=lambda: np.diag([30.0, 25., 35.0, 20.0])  # levine sim
-        default_factory=lambda: np.diag([25., 25., 10.0, 40.0])
+        default_factory=lambda: np.diag([40., 40., 10.0, 50.0])
     )  # state error cost matrix, for the the next (T) prediction time steps [x, y, v, yaw]
     Qfk: list = field(
         #default_factory=lambda: np.diag([33.5, 25., 35.0, 20.0])  # levine sim
-        default_factory=lambda: np.diag([25., 25., 10.0, 40.0])
+        default_factory=lambda: np.diag([40., 40., 10.0, 50.0])
     )  # final state error matrix, penalty  for the final state constraints: [x, y, v, yaw]
     # ---------------------------------------------------
 
@@ -52,13 +53,13 @@ class mpc_config:
     N_IND_SEARCH: int = 20  # Search index number
     DTK: float = 0.1  # time step [s] kinematic
     dlk: float = 0.03  # dist step [m] kinematic
-    LENGTH: float = 0.44  # Length of the vehicle [m]
+    LENGTH: float = 0.5  # Length of the vehicle [m]
     WIDTH: float = 0.280  # Width of the vehicle [m]
     WB: float = 0.330  # Wheelbase [m]
     MIN_STEER: float = -0.353 #$-0.4236,5236  # maximum steering angle [rad]
     MAX_STEER: float = 0.353 #0.4236,5236  # maximum steering angle [rad]
     MAX_DSTEER: float = np.deg2rad(180.0)  # maximum steering speed [rad/s]    
-    MAX_SPEED: float = 1.5  # maximum speed [m/s]
+    MAX_SPEED: float = 1.0  # maximum speed [m/s]
     MIN_SPEED: float = 0.0  # minimum backward speed [m/s]
     MAX_ACCEL: float = 5.0  # maximum acceleration [m/ss]
 
@@ -69,18 +70,17 @@ class mpc_config:
     OBS_1_RADIUS: float = 0.20    # [m] physical radius of obstacle 1
     OBS_2_RADIUS: float = 0.20    # [m] physical radius of obstacle 2
     OBS_3_RADIUS: float = 0.20    # [m] physical radius of obstacle 3
-    OBS_4_RADIUS: float = 0.20    # [m] physical radius of obstacle 4
-    SAFETY_MARGIN: float = 0.10   # [m] extra clearance
+    SAFETY_MARGIN: float = 0.15   # [m] extra clearance
     OBSTACLE_MARKER_HEIGHT: float = 0.08  # [m] RViz cylinder height
 
     # ---------- soft-min composite CBF tuning ----------
-    SOFTMIN_KAPPA: float = 5
+    SOFTMIN_KAPPA: float = 10.0
     BETA_1: float = 1e3
     SOFTMIN_TOPK: int = 2
     FAR_OBS_THRESHOLD: float = 1.0e5
     SOFTMIN_INACTIVE_VALUE: float = 1.0e3
 
-    MIN_PREVIEW_SPEED: float = 1.0
+    MIN_PREVIEW_SPEED: float = 0.8
     MIN_PREVIEW_DIND: float = 1.0
 
 
@@ -98,7 +98,30 @@ class mpc_config:
     # 0.5 means blend old and new.
     SCP_ALPHA: float = 0.6
 
-    CBF_TOL: float = 0.1
+
+    # ---------- Hybrid A* local planner ----------
+    USE_HYBRID_ASTAR: bool = True
+    HA_TRIGGER_BUFFER: float = 0.50       # [m] extra trigger distance around CBF radius
+    HA_GOAL_AHEAD_INDEX: int = 50        # waypoint index ahead on global square path
+    HA_GRID_RES: float = 0.06            # [m] grid resolution for closed-set keys
+    HA_YAW_BINS: int = 36                # 10 deg yaw bins
+    HA_STEP: float = 0.10                # [m] forward simulation step
+    HA_GOAL_TOL: float = 0.20            # [m] goal tolerance
+    HA_MAX_EXPANSIONS: int = 12000
+    HA_LOCAL_SIZE_X: float = 4.0         # [m] local planning box size
+    HA_LOCAL_SIZE_Y: float = 4.0         # [m] local planning box size
+    HA_LOCAL_MARGIN: float = 0.60        # [m] ensure goal has margin inside box
+    HA_OBS_INFLATION_EXTRA: float = 0.03 # [m] extra planner inflation
+    HA_PATH_SPEED: float = 0.40          # [m/s] speed assigned to planned path
+    HA_STEER_PENALTY: float = 0.03
+    HA_REVERSE_ALLOWED: bool = False     # keep False first for safer F1TENTH behavior
+    HA_FORCE_PLAN: bool = False          # False: plan only when the square path is blocked
+
+    # Keep the local planner close to the main square trajectory.
+    # Without this corridor, A*/Hybrid A* will take the shortest shortcut.
+    HA_USE_PATH_CORRIDOR: bool = True
+    HA_CORRIDOR_WIDTH: float = 0.65      # [m] allowed distance from current square-path segment
+    HA_CORRIDOR_EXTRA_AHEAD: int = 15    # extra global waypoints after the local goal
 
 
 @dataclass
@@ -139,14 +162,14 @@ class MPC(Node):
         vis_waypoints_topic = "/waypoints_marker"
         vis_pred_path_topic = "/pred_path_marker"
         vis_obstacles_topic = "/obstacle_markers"
+        vis_hybrid_path_topic = "/hybrid_astar_path_marker"
 
         self.pose_sub = self.create_subscription(PoseStamped if self.is_real else Odometry, pose_topic, self.pose_callback, 1)
         self.pose_sub  # prevent unused variable warning
 
-        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_525/odom", self.obs_1_callback, 10)
-        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_526/odom", self.obs_2_callback, 10)
-        self.obs_3 = self.create_subscription(Odometry, "/optitrack/object_527/odom", self.obs_3_callback, 10)
-        self.obs_4 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_4_callback, 10)
+        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_527/odom", self.obs_1_callback, 10)
+        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_2_callback, 10)
+        #self.obs_3 = self.create_subscription(Odometry, "/optitrack/object_526/odom", self.obs_3_callback, 10)
 
         self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 1)
         self.drive_msg = AckermannDriveStamped()
@@ -158,6 +181,8 @@ class MPC(Node):
         self.vis_pred_path_pub = self.create_publisher(Marker, vis_pred_path_topic, 1)
         self.vis_pred_path_msg = Marker()
         self.vis_obstacles_pub = self.create_publisher(MarkerArray, vis_obstacles_topic, 1)
+        self.vis_hybrid_path_pub = self.create_publisher(Marker, vis_hybrid_path_topic, 1)
+        self.vis_hybrid_path_msg = Marker()
 
         #map_path = os.path.abspath(os.path.join('src', 'f1tenth-software-stack','csv_data'))
 
@@ -220,17 +245,20 @@ class MPC(Node):
         self.obs_2_y = far_obs
         self.obs_3_x = far_obs
         self.obs_3_y = far_obs
-        self.obs_4_x = far_obs
-        self.obs_4_y = far_obs
 
         # Physical radius of each obstacle. Update these values if your obstacles have different sizes.
         self.obs_1_r = self.config.OBS_1_RADIUS
         self.obs_2_r = self.config.OBS_2_RADIUS
         self.obs_3_r = self.config.OBS_3_RADIUS
-        self.obs_4_r = self.config.OBS_4_RADIUS
 
         # Publish obstacle and CBF safety-radius markers at 10 Hz.
         self.obs_marker_timer = self.create_timer(0.1, self.visualize_obstacles_in_rviz)
+
+        self.last_hybrid_astar_path = None
+        self.planner_corridor_xy = None
+        self.active_corridor_width = self.config.HA_CORRIDOR_WIDTH
+        self.planner_start_ind = None
+        self.planner_goal_ind = None
 
         self.prev_pose_time = None
         self.prev_pose_x = None
@@ -249,12 +277,6 @@ class MPC(Node):
         self.obs_3_x = msg.pose.pose.position.x
         self.obs_3_y = msg.pose.pose.position.y
 
-    def obs_4_callback(self, msg):
-        self.obs_4_x = msg.pose.pose.position.x
-        self.obs_4_y = msg.pose.pose.position.y
-
-
-
     def pose_callback(self, pose_msg):
         # extract pose from ROS msg
         self.update_rotation_matrix(pose_msg)
@@ -269,6 +291,10 @@ class MPC(Node):
         ref_path = self.calc_ref_trajectory(vehicle_state, self.ref_pos_x, self.ref_pos_y, self.heading_yaw, self.ref_speed)
         #ref_path = self.calc_ref_trajectory(vehicle_state, self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2], self.waypoints[:, 3]) # f1tenth AutoDrive
         # print(ref_path)
+
+        # Hybrid A* only changes the reference when the nominal square-path horizon is blocked.
+        ref_path = self.apply_hybrid_astar_if_needed(vehicle_state, ref_path)
+
         self.visualize_ref_traj_in_rviz(ref_path)
         
         x0 = [vehicle_state.x, vehicle_state.y, vehicle_state.v, vehicle_state.yaw]
@@ -315,68 +341,537 @@ class MPC(Node):
 
 
     def update_vehicle_state(self, pose_msg):
-        """
-        written by Derek, not from the template, != update state
-        """
         vehicle_state = State()
+
         vehicle_state.x = pose_msg.pose.position.x if self.is_real else pose_msg.pose.pose.position.x
         vehicle_state.y = pose_msg.pose.position.y if self.is_real else pose_msg.pose.pose.position.y
-        vehicle_state.v = self.drive_msg.drive.speed
 
         curr_orien = pose_msg.pose.orientation if self.is_real else pose_msg.pose.pose.orientation
         q = [curr_orien.x, curr_orien.y, curr_orien.z, curr_orien.w]
-        vehicle_state.yaw = math.atan2(2 * (q[3] * q[2] + q[0] * q[1]), 1 - 2 * (q[1] ** 2 + q[2] ** 2))
-        # https://en.wikipedia.org/wiki/Rotation_formalisms_in_three_dimensions#Quaternion_%E2%86%92_Euler_angles_(z-y%E2%80%B2-x%E2%80%B3_intrinsic)
-        # print("yaw =", vehicle_state.yaw)
+        vehicle_state.yaw = math.atan2(
+            2 * (q[3] * q[2] + q[0] * q[1]),
+            1 - 2 * (q[1] ** 2 + q[2] ** 2)
+        )
+
+        # ---------- speed estimation from pose ----------
+        stamp = pose_msg.header.stamp if self.is_real else pose_msg.header.stamp
+        curr_time = float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
+        if self.prev_pose_time is None:
+            vehicle_state.v = self.drive_msg.drive.speed
+        else:
+            dt = curr_time - self.prev_pose_time
+            if dt <= 1e-4:
+                vehicle_state.v = self.drive_msg.drive.speed
+            else:
+                dx = vehicle_state.x - self.prev_pose_x
+                dy = vehicle_state.y - self.prev_pose_y
+                #vehicle_state.v = math.sqrt(dx * dx + dy * dy) / dt
+                raw_v = math.sqrt(dx * dx + dy * dy) / dt
+                raw_v = np.clip(raw_v, 0.0, self.config.MAX_SPEED)
+
+                alpha = 0.3
+                if not hasattr(self, "v_filt"):
+                    self.v_filt = raw_v
+                else:
+                    self.v_filt = alpha * raw_v + (1.0 - alpha) * self.v_filt
+
+                vehicle_state.v = self.v_filt
+
+        self.prev_pose_time = curr_time
+        self.prev_pose_x = vehicle_state.x
+        self.prev_pose_y = vehicle_state.y
 
         return vehicle_state
 
-    # def update_vehicle_state(self, pose_msg):
-    #     vehicle_state = State()
-
-    #     vehicle_state.x = pose_msg.pose.position.x if self.is_real else pose_msg.pose.pose.position.x
-    #     vehicle_state.y = pose_msg.pose.position.y if self.is_real else pose_msg.pose.pose.position.y
-
-    #     curr_orien = pose_msg.pose.orientation if self.is_real else pose_msg.pose.pose.orientation
-    #     q = [curr_orien.x, curr_orien.y, curr_orien.z, curr_orien.w]
-    #     vehicle_state.yaw = math.atan2(
-    #         2 * (q[3] * q[2] + q[0] * q[1]),
-    #         1 - 2 * (q[1] ** 2 + q[2] ** 2)
-    #     )
-
-    #     # ---------- speed estimation from pose ----------
-    #     stamp = pose_msg.header.stamp if self.is_real else pose_msg.header.stamp
-    #     curr_time = float(stamp.sec) + 1e-9 * float(stamp.nanosec)
-
-    #     if self.prev_pose_time is None:
-    #         vehicle_state.v = self.drive_msg.drive.speed
-    #     else:
-    #         dt = curr_time - self.prev_pose_time
-    #         if dt <= 1e-4:
-    #             vehicle_state.v = self.drive_msg.drive.speed
-    #         else:
-    #             dx = vehicle_state.x - self.prev_pose_x
-    #             dy = vehicle_state.y - self.prev_pose_y
-    #             #vehicle_state.v = math.sqrt(dx * dx + dy * dy) / dt
-    #             raw_v = math.sqrt(dx * dx + dy * dy) / dt
-    #             raw_v = np.clip(raw_v, 0.0, self.config.MAX_SPEED)
-
-    #             alpha = 0.3
-    #             if not hasattr(self, "v_filt"):
-    #                 self.v_filt = raw_v
-    #             else:
-    #                 self.v_filt = alpha * raw_v + (1.0 - alpha) * self.v_filt
-
-    #             vehicle_state.v = self.v_filt
-
-    #     self.prev_pose_time = curr_time
-    #     self.prev_pose_x = vehicle_state.x
-    #     self.prev_pose_y = vehicle_state.y
-
-    #     return vehicle_state
 
 
 
+
+    # ------------------------------------------------------------------
+    # Hybrid A* local planner
+    # ------------------------------------------------------------------
+    def wrap_to_pi(self, angle):
+        return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+    def yaw_to_bin(self, yaw):
+        yaw_wrapped = self.wrap_to_pi(yaw)
+        yaw_norm = (yaw_wrapped + math.pi) / (2.0 * math.pi)
+        return int(math.floor(yaw_norm * self.config.HA_YAW_BINS)) % self.config.HA_YAW_BINS
+
+    def hybrid_state_key(self, x, y, yaw, bounds):
+        xmin, xmax, ymin, ymax = bounds
+        ix = int(math.floor((x - xmin) / self.config.HA_GRID_RES))
+        iy = int(math.floor((y - ymin) / self.config.HA_GRID_RES))
+        iyaw = self.yaw_to_bin(yaw)
+        return (ix, iy, iyaw)
+
+    def get_planner_obstacle_radius(self, obs_radius):
+        """
+        Radius used by the planner.
+
+        Important: this must be LESS conservative than the CBF radius.
+        The CBF can use SAFETY_MARGIN, but the planner should only avoid
+        the physical collision region plus a small buffer.
+        """
+        return self.car_radius + obs_radius + self.config.HA_OBS_INFLATION_EXTRA
+
+    def ref_path_blocked_by_obstacle(self, ref_path):
+        """
+        Return True if any OptiTrack obstacle is close enough to the nominal MPC
+        reference horizon. This decides when Hybrid A* should replace the reference.
+        """
+        obstacles = self.get_valid_obstacles()
+        if len(obstacles) == 0:
+            return False
+
+        path_xy = ref_path[0:2, :].T
+        for ox, oy, obs_radius in obstacles:
+            obs_xy = np.array([ox, oy])
+            dmin = np.min(np.linalg.norm(path_xy - obs_xy, axis=1))
+            trigger_radius = self.get_safe_radius(obs_radius) + self.config.HA_TRIGGER_BUFFER
+            if dmin < trigger_radius:
+                return True
+
+        return False
+
+    def prepare_planner_context(self, state):
+        """
+        Build a local corridor around the CURRENT part of the square trajectory.
+
+        This is important: the planner is not allowed to use the whole lab as free
+        space. It should only make a local detour and then reconnect to the square.
+        """
+        _, _, _, ind = nearest_point(
+            np.array([state.x, state.y]),
+            np.array([self.ref_pos_x, self.ref_pos_y]).T,
+        )
+
+        n = len(self.ref_pos_x)
+        start_ind = int(ind)
+        goal_ind = (start_ind + int(self.config.HA_GOAL_AHEAD_INDEX)) % n
+
+        # Store these so get_hybrid_astar_goal() uses the same goal.
+        self.planner_start_ind = start_ind
+        self.planner_goal_ind = goal_ind
+
+        # Corridor follows only the local forward segment of the square path,
+        # not the whole square. This prevents shortcuts across the rectangle.
+        num = int(self.config.HA_GOAL_AHEAD_INDEX + self.config.HA_CORRIDOR_EXTRA_AHEAD)
+        idxs = [(start_ind + k) % n for k in range(num + 1)]
+        self.planner_corridor_xy = np.column_stack((
+            self.ref_pos_x[idxs],
+            self.ref_pos_y[idxs],
+        ))
+
+        # If the car is slightly off the path, do not reject it immediately.
+        start_d = self.distance_to_planner_corridor(state.x, state.y)
+        self.active_corridor_width = max(
+            self.config.HA_CORRIDOR_WIDTH,
+            start_d + 0.15,
+        )
+
+    def distance_to_planner_corridor(self, x, y):
+        if self.planner_corridor_xy is None or len(self.planner_corridor_xy) == 0:
+            return 0.0
+        p = np.array([x, y], dtype=float)
+        return float(np.min(np.linalg.norm(self.planner_corridor_xy - p, axis=1)))
+
+    def get_hybrid_astar_goal(self, state):
+        """
+        Pick a local goal ahead on the original square trajectory.
+        This is what prevents the car from stopping at the obstacle.
+        """
+        _, _, _, ind = nearest_point(
+            np.array([state.x, state.y]),
+            np.array([self.ref_pos_x, self.ref_pos_y]).T,
+        )
+
+        n = len(self.ref_pos_x)
+        if self.planner_goal_ind is not None:
+            goal_ind = int(self.planner_goal_ind) % n
+        else:
+            goal_ind = (int(ind) + int(self.config.HA_GOAL_AHEAD_INDEX)) % n
+
+        gx = float(self.ref_pos_x[goal_ind])
+        gy = float(self.ref_pos_y[goal_ind])
+        gyaw = float(self.heading_yaw[goal_ind])
+
+        # Keep the goal yaw numerically close to the current yaw.
+        while gyaw - state.yaw > math.pi:
+            gyaw -= 2.0 * math.pi
+        while state.yaw - gyaw > math.pi:
+            gyaw += 2.0 * math.pi
+
+        return gx, gy, gyaw
+
+    def get_hybrid_astar_bounds(self, start, goal):
+        sx, sy, _ = start
+        gx, gy, _ = goal
+
+        xmin = sx - 0.5 * self.config.HA_LOCAL_SIZE_X
+        xmax = sx + 0.5 * self.config.HA_LOCAL_SIZE_X
+        ymin = sy - 0.5 * self.config.HA_LOCAL_SIZE_Y
+        ymax = sy + 0.5 * self.config.HA_LOCAL_SIZE_Y
+
+        # Make sure the goal is inside the planning box.
+        m = self.config.HA_LOCAL_MARGIN
+        xmin = min(xmin, gx - m)
+        xmax = max(xmax, gx + m)
+        ymin = min(ymin, gy - m)
+        ymax = max(ymax, gy + m)
+
+        return xmin, xmax, ymin, ymax
+
+    def is_xy_inside_bounds(self, x, y, bounds):
+        xmin, xmax, ymin, ymax = bounds
+        return xmin <= x <= xmax and ymin <= y <= ymax
+
+    def is_collision_free_xy(self, x, y, bounds, obstacles):
+        if not self.is_xy_inside_bounds(x, y, bounds):
+            return False
+
+        # Do not let the local planner shortcut across the square.
+        # It must stay near the current forward segment of the main trajectory.
+        if self.config.HA_USE_PATH_CORRIDOR:
+            if self.distance_to_planner_corridor(x, y) > self.active_corridor_width:
+                return False
+
+        for ox, oy, obs_radius in obstacles:
+            rr = self.get_planner_obstacle_radius(obs_radius)
+            dx = x - ox
+            dy = y - oy
+            if dx * dx + dy * dy <= rr * rr:
+                return False
+
+        return True
+
+    def is_motion_collision_free(self, x0, y0, x1, y1, bounds, obstacles):
+        """Check the short motion primitive with a few samples."""
+        dist = math.hypot(x1 - x0, y1 - y0)
+        n = max(2, int(math.ceil(dist / (0.5 * self.config.HA_GRID_RES))))
+        for i in range(n + 1):
+            s = i / float(n)
+            x = (1.0 - s) * x0 + s * x1
+            y = (1.0 - s) * y0 + s * y1
+            if not self.is_collision_free_xy(x, y, bounds, obstacles):
+                return False
+        return True
+
+    def reconstruct_hybrid_path(self, goal_key, parents, node_data):
+        path = []
+        key = goal_key
+        while key is not None:
+            path.append(node_data[key])
+            key = parents[key]
+        path.reverse()
+        return np.asarray(path, dtype=float)
+
+    def hybrid_astar_plan(self, state):
+        """
+        Lightweight Hybrid A* planner.
+
+        State: (x, y, yaw). Motion primitives use the same bicycle geometry as the MPC.
+        Obstacles are OptiTrack circles inflated by car radius + margin.
+        """
+        obstacles = self.get_valid_obstacles()
+        if len(obstacles) == 0:
+            return None
+
+        start = (float(state.x), float(state.y), float(state.yaw))
+        goal = self.get_hybrid_astar_goal(state)
+        bounds = self.get_hybrid_astar_bounds(start, goal)
+
+        # Do not reject the start. In real experiments, the car may already be
+        # inside the CBF safety margin. The planner should still try to escape.
+        if not self.is_collision_free_xy(goal[0], goal[1], bounds, obstacles):
+            print("[Hybrid A*] Goal is inside planner obstacle inflation.")
+            return None
+
+        steer_set = [self.config.MIN_STEER, 0.0, self.config.MAX_STEER]
+        directions = [1.0]
+        if self.config.HA_REVERSE_ALLOWED:
+            directions.append(-1.0)
+
+        start_key = self.hybrid_state_key(start[0], start[1], start[2], bounds)
+        parents = {start_key: None}
+        node_data = {start_key: start}
+        g_cost = {start_key: 0.0}
+
+        def heuristic(x, y):
+            return math.hypot(goal[0] - x, goal[1] - y)
+
+        open_heap = []
+        counter = 0
+        heapq.heappush(open_heap, (heuristic(start[0], start[1]), counter, start_key))
+
+        best_key = start_key
+        best_dist = heuristic(start[0], start[1])
+        expansions = 0
+
+        while open_heap and expansions < self.config.HA_MAX_EXPANSIONS:
+            _, _, current_key = heapq.heappop(open_heap)
+            cx, cy, cyaw = node_data[current_key]
+            expansions += 1
+
+            dist_to_goal = heuristic(cx, cy)
+            if dist_to_goal < best_dist:
+                best_dist = dist_to_goal
+                best_key = current_key
+
+            if dist_to_goal <= self.config.HA_GOAL_TOL:
+                print(f"[Hybrid A*] Success. expansions={expansions}, goal_dist={dist_to_goal:.3f}")
+                return self.reconstruct_hybrid_path(current_key, parents, node_data)
+
+            for direction in directions:
+                for delta in steer_set:
+                    ds = direction * self.config.HA_STEP
+                    nx = cx + ds * math.cos(cyaw)
+                    ny = cy + ds * math.sin(cyaw)
+                    nyaw = self.wrap_to_pi(cyaw + (ds / self.config.WB) * math.tan(delta))
+
+                    if not self.is_motion_collision_free(cx, cy, nx, ny, bounds, obstacles):
+                        continue
+
+                    nkey = self.hybrid_state_key(nx, ny, nyaw, bounds)
+
+                    step_cost = abs(ds)
+                    step_cost += self.config.HA_STEER_PENALTY * abs(delta) / max(abs(self.config.MAX_STEER), 1e-6)
+                    if direction < 0.0:
+                        step_cost += 0.50
+
+                    new_g = g_cost[current_key] + step_cost
+                    if nkey not in g_cost or new_g < g_cost[nkey]:
+                        g_cost[nkey] = new_g
+                        parents[nkey] = current_key
+                        node_data[nkey] = (nx, ny, nyaw)
+                        counter += 1
+                        f = new_g + heuristic(nx, ny)
+                        heapq.heappush(open_heap, (f, counter, nkey))
+
+        if best_dist < 0.50:
+            print(f"[Hybrid A*] Partial path accepted. best_dist={best_dist:.3f}")
+            return self.reconstruct_hybrid_path(best_key, parents, node_data)
+
+        print(f"[Hybrid A*] Failed. best_dist={best_dist:.3f}, expansions={expansions}")
+        return None
+
+    def grid_astar_plan(self, state):
+        """
+        Robust fallback planner on a local 2D grid.
+
+        This is not the final controller. It is a debugging/planning backup that
+        almost always produces a geometric path around OptiTrack obstacles. The
+        MPC then tracks this path.
+        """
+        obstacles = self.get_valid_obstacles()
+        if len(obstacles) == 0:
+            return None
+
+        start = (float(state.x), float(state.y), float(state.yaw))
+        goal = self.get_hybrid_astar_goal(state)
+        bounds = self.get_hybrid_astar_bounds(start, goal)
+
+        xmin, xmax, ymin, ymax = bounds
+        res = self.config.HA_GRID_RES
+        nx = int(math.ceil((xmax - xmin) / res)) + 1
+        ny = int(math.ceil((ymax - ymin) / res)) + 1
+
+        def world_to_grid(x, y):
+            ix = int(round((x - xmin) / res))
+            iy = int(round((y - ymin) / res))
+            ix = int(np.clip(ix, 0, nx - 1))
+            iy = int(np.clip(iy, 0, ny - 1))
+            return ix, iy
+
+        def grid_to_world(ix, iy):
+            return xmin + ix * res, ymin + iy * res
+
+        start_idx = world_to_grid(start[0], start[1])
+        goal_idx = world_to_grid(goal[0], goal[1])
+
+        def free_cell(ix, iy):
+            # Always allow the start cell, otherwise no planner can escape when
+            # the car begins slightly inside the inflated safety region.
+            if (ix, iy) == start_idx:
+                return True
+            x, y = grid_to_world(ix, iy)
+            if not self.is_xy_inside_bounds(x, y, bounds):
+                return False
+            for ox, oy, obs_radius in obstacles:
+                rr = self.get_planner_obstacle_radius(obs_radius)
+                dx = x - ox
+                dy = y - oy
+                if dx * dx + dy * dy <= rr * rr:
+                    return False
+            return True
+
+        # If the selected goal is occupied, move farther along the square path.
+        if not free_cell(goal_idx[0], goal_idx[1]):
+            _, _, _, ind = nearest_point(
+                np.array([state.x, state.y]),
+                np.array([self.ref_pos_x, self.ref_pos_y]).T,
+            )
+            found_goal = False
+            nwp = len(self.ref_pos_x)
+            for offset in range(self.config.HA_GOAL_AHEAD_INDEX, self.config.HA_GOAL_AHEAD_INDEX + 180, 10):
+                gi = (int(ind) + offset) % nwp
+                cand = (float(self.ref_pos_x[gi]), float(self.ref_pos_y[gi]), float(self.heading_yaw[gi]))
+                goal_idx_tmp = world_to_grid(cand[0], cand[1])
+                if free_cell(goal_idx_tmp[0], goal_idx_tmp[1]):
+                    goal = cand
+                    goal_idx = goal_idx_tmp
+                    found_goal = True
+                    break
+            if not found_goal:
+                print("[Grid A*] Could not find a free goal ahead.")
+                return None
+
+        neighbors = [
+            (1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
+            (1, 1, math.sqrt(2.0)), (1, -1, math.sqrt(2.0)),
+            (-1, 1, math.sqrt(2.0)), (-1, -1, math.sqrt(2.0)),
+        ]
+
+        def heuristic(idx):
+            return math.hypot(idx[0] - goal_idx[0], idx[1] - goal_idx[1])
+
+        open_heap = []
+        heapq.heappush(open_heap, (heuristic(start_idx), 0, start_idx))
+        parents = {start_idx: None}
+        g_cost = {start_idx: 0.0}
+        counter = 0
+        best_idx = start_idx
+        best_h = heuristic(start_idx)
+
+        while open_heap and counter < self.config.HA_MAX_EXPANSIONS:
+            _, _, current = heapq.heappop(open_heap)
+
+            hcur = heuristic(current)
+            if hcur < best_h:
+                best_h = hcur
+                best_idx = current
+
+            if current == goal_idx or hcur * res <= self.config.HA_GOAL_TOL:
+                best_idx = current
+                break
+
+            cx, cy = current
+            for dx, dy, cost_mult in neighbors:
+                ni = cx + dx
+                nj = cy + dy
+                if ni < 0 or ni >= nx or nj < 0 or nj >= ny:
+                    continue
+                if not free_cell(ni, nj):
+                    continue
+
+                nidx = (ni, nj)
+                new_g = g_cost[current] + cost_mult * res
+                if nidx not in g_cost or new_g < g_cost[nidx]:
+                    g_cost[nidx] = new_g
+                    parents[nidx] = current
+                    counter += 1
+                    heapq.heappush(open_heap, (new_g + heuristic(nidx) * res, counter, nidx))
+
+        if best_idx == start_idx:
+            print("[Grid A*] Failed: best path stayed at start.")
+            return None
+
+        # Reconstruct path.
+        cells = []
+        k = best_idx
+        while k is not None:
+            cells.append(k)
+            k = parents[k]
+        cells.reverse()
+
+        xy = np.array([grid_to_world(ix, iy) for ix, iy in cells], dtype=float)
+        if xy.shape[0] < 2:
+            return None
+
+        yaw = np.zeros(xy.shape[0])
+        yaw[:-1] = np.arctan2(np.diff(xy[:, 1]), np.diff(xy[:, 0]))
+        yaw[-1] = yaw[-2]
+
+        path = np.column_stack((xy[:, 0], xy[:, 1], np.unwrap(yaw)))
+        print(f"[Grid A*] Success. points={path.shape[0]}, best_goal_error={best_h * res:.3f}")
+        return path
+
+
+    def hybrid_path_to_ref_path(self, hybrid_path, nominal_ref_path):
+        """Convert the Hybrid A* geometric path into the MPC ref_path format."""
+        if hybrid_path is None or len(hybrid_path) < 2:
+            return nominal_ref_path
+
+        x = hybrid_path[:, 0]
+        y = hybrid_path[:, 1]
+
+        ds = np.hypot(np.diff(x), np.diff(y))
+        s = np.insert(np.cumsum(ds), 0, 0.0)
+        total = float(s[-1])
+        if total < 1e-6:
+            return nominal_ref_path
+
+        s_new = np.linspace(0.0, total, self.config.TK + 1)
+        x_new = np.interp(s_new, s, x)
+        y_new = np.interp(s_new, s, y)
+
+        ref_path = nominal_ref_path.copy()
+        ref_path[0, :] = x_new
+        ref_path[1, :] = y_new
+        ref_path[2, :] = self.config.HA_PATH_SPEED
+
+        dx = np.gradient(x_new)
+        dy = np.gradient(y_new)
+        yaw = np.arctan2(dy, dx)
+        ref_path[3, :] = np.unwrap(yaw)
+
+        return ref_path
+
+    def apply_hybrid_astar_if_needed(self, state, nominal_ref_path):
+        """
+        Main integration point.
+
+        While debugging, HA_FORCE_PLAN=True makes the planner run whenever
+        OptiTrack obstacles exist. After it works, you can set it False so
+        it only activates when the reference is blocked.
+        """
+        if not self.config.USE_HYBRID_ASTAR:
+            return nominal_ref_path
+
+        obstacles = self.get_valid_obstacles()
+        if len(obstacles) == 0:
+            self.last_hybrid_astar_path = None
+            self.clear_hybrid_astar_path_in_rviz()
+            return nominal_ref_path
+
+        blocked = self.ref_path_blocked_by_obstacle(nominal_ref_path)
+        if (not self.config.HA_FORCE_PLAN) and (not blocked):
+            self.last_hybrid_astar_path = None
+            self.clear_hybrid_astar_path_in_rviz()
+            return nominal_ref_path
+
+        # Build the local corridor and the local goal on the square path.
+        self.prepare_planner_context(state)
+
+        # 1) Try Hybrid A*.
+        hybrid_path = self.hybrid_astar_plan(state)
+
+        # 2) If Hybrid A* fails, use a grid A* fallback.
+        # This makes sure you still see a path in RViz while debugging.
+        if hybrid_path is None:
+            print("[Planner] Hybrid A* failed. Trying grid A* fallback.")
+            hybrid_path = self.grid_astar_plan(state)
+
+        if hybrid_path is None:
+            print("[Planner] No local path found. Keeping nominal MPC reference.")
+            self.last_hybrid_astar_path = None
+            self.clear_hybrid_astar_path_in_rviz()
+            return nominal_ref_path
+
+        self.last_hybrid_astar_path = hybrid_path
+        self.visualize_hybrid_astar_path_in_rviz(hybrid_path)
+        return self.hybrid_path_to_ref_path(hybrid_path, nominal_ref_path)
 
     # mpc functions
     def mpc_prob_init(self):
@@ -562,8 +1057,7 @@ class MPC(Node):
                 + self.cbf_soft_ay_k[t] * self.xk[1, t]
                 + self.cbf_soft_ac_k[t]
             )
-            #constraints.append(h_soft_lin >= 0.0)
-            constraints.append(h_soft_lin >= -self.config.CBF_TOL)
+            constraints.append(h_soft_lin >= 0.0)
 
                 # Create the optimization problem in CVXPY and setup the workspace
                 # Optimization goal: minimize the objective function
@@ -717,7 +1211,6 @@ class MPC(Node):
             (self.obs_1_x, self.obs_1_y, self.obs_1_r),
             (self.obs_2_x, self.obs_2_y, self.obs_2_r),
             (self.obs_3_x, self.obs_3_y, self.obs_3_r),
-            (self.obs_4_x, self.obs_4_y, self.obs_4_r),
         ]
 
         valid_obstacles = []
@@ -811,7 +1304,9 @@ class MPC(Node):
                 key=lambda obs: (x_nom - obs[0]) ** 2 + (y_nom - obs[1]) ** 2
             )
 
-            obstacles = obstacles_sorted[:min(self.config.SOFTMIN_TOPK, len(obstacles_sorted))]
+            obstacles = obstacles_sorted[
+                :min(self.config.SOFTMIN_TOPK, len(obstacles_sorted))
+            ]
 
             # Debug only. This should not control the computation.
             if t == 1 or t == self.config.TK // 2:
@@ -1125,6 +1620,39 @@ class MPC(Node):
 
         self.vis_obstacles_pub.publish(marker_array)
 
+
+
+
+    def clear_hybrid_astar_path_in_rviz(self):
+        """Remove stale Hybrid A* path from RViz when the planner is inactive."""
+        marker = Marker()
+        marker.header.frame_id = '/map'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'hybrid_astar_path'
+        marker.id = 0
+        marker.action = Marker.DELETE
+        self.vis_hybrid_path_pub.publish(marker)
+
+    def visualize_hybrid_astar_path_in_rviz(self, hybrid_path):
+        """Publish the raw Hybrid A* path in RViz."""
+        self.vis_hybrid_path_msg.points = []
+        self.vis_hybrid_path_msg.header.frame_id = '/map'
+        self.vis_hybrid_path_msg.header.stamp = self.get_clock().now().to_msg()
+        self.vis_hybrid_path_msg.type = Marker.LINE_STRIP
+        self.vis_hybrid_path_msg.action = Marker.ADD
+        self.vis_hybrid_path_msg.color.r = 0.0
+        self.vis_hybrid_path_msg.color.g = 1.0
+        self.vis_hybrid_path_msg.color.b = 0.0
+        self.vis_hybrid_path_msg.color.a = 1.0
+        self.vis_hybrid_path_msg.scale.x = 0.05
+        self.vis_hybrid_path_msg.id = 0
+        self.vis_hybrid_path_msg.ns = 'hybrid_astar_path'
+
+        for i in range(hybrid_path.shape[0]):
+            point = Point(x=float(hybrid_path[i, 0]), y=float(hybrid_path[i, 1]), z=0.25)
+            self.vis_hybrid_path_msg.points.append(point)
+
+        self.vis_hybrid_path_pub.publish(self.vis_hybrid_path_msg)
 
     def visualize_waypoints_in_rviz(self):
         self.vis_waypoints_msg.points = []

@@ -26,25 +26,25 @@ from scipy.interpolate import CubicSpline
 class mpc_config:
     NXK: int = 4  # length of kinematic state vector: z = [x, y, v, yaw]
     NU: int = 2  # length of input vector: u = [steering speed, acceleration]
-    TK: int = 5  # finite time horizon length - kinematic
+    TK: int = 8  # finite time horizon length - kinematic
 
     # ---------------------------------------------------
     # TODO: you may need to tune the following matrices
     Rk: list = field(
         #default_factory=lambda: np.diag([0.01, 100.0])
-        default_factory=lambda: np.diag([10.0, 100.0])
+        default_factory=lambda: np.diag([10.0, 35.0])
     )  # input cost matrix, penalty for inputs - [accel, steering_speed]
     Rdk: list = field(
         #default_factory=lambda: np.diag([0.01, 100.0])
-        default_factory=lambda: np.diag([10.0, 100.0])
+        default_factory=lambda: np.diag([10.0, 35.0])
     )  # input difference cost matrix, penalty for change of inputs - [accel, steering_speed]
     Qk: list = field(
         #default_factory=lambda: np.diag([33.5, 13.5, 15.5, 15.0])  # levine sim
-        default_factory=lambda: np.diag([60., 50., 5.5, 15.0])
+        default_factory=lambda: np.diag([60., 50., 5.5, 35.0])
     )  # state error cost matrix, for the the next (T) prediction time steps [x, y, delta, v, yaw, yaw-rate, beta]
     Qfk: list = field(
         #default_factory=lambda: np.diag([33.5, 13.5, 15.5, 15.1])  # levine sim
-        default_factory=lambda: np.diag([60., 50., 5.5, 15.0])
+        default_factory=lambda: np.diag([60., 50., 5.5, 35.0])
     )  # final state error matrix, penalty  for the final state constraints: [x, y, delta, v, yaw, yaw-rate, beta]
     # ---------------------------------------------------
 
@@ -65,11 +65,11 @@ class mpc_config:
     N_IND_SEARCH: int = 20  # Search index number
     DTK: float = 0.1  # time step [s] kinematic
     dlk: float = 0.03  # dist step [m] kinematic
-    LENGTH: float = 0.50  # Length of the vehicle [m]
-    WIDTH: float = 0.2700  # Width of the vehicle [m]
-    WB: float = 0.3240  # Wheelbase [m]
-    MIN_STEER: float = -0.4236 #$-0.4236,5236  # maximum steering angle [rad]
-    MAX_STEER: float = 0.4236 #0.4236,5236  # maximum steering angle [rad]
+    LENGTH: float = 0.44  # Length of the vehicle [m]
+    WIDTH: float = 0.2800  # Width of the vehicle [m]
+    WB: float = 0.33  # Wheelbase [m]
+    MIN_STEER: float =  -0.4236 #-0.353 #-0.4236,5236  # maximum steering angle [rad]
+    MAX_STEER: float =  0.4236 #0.353 #0.4236,5236  # maximum steering angle [rad]
     MAX_DSTEER: float = np.deg2rad(180.0)  # maximum steering speed [rad/s]    
     MAX_SPEED: float = 2.0  # maximum speed [m/s]
     MIN_SPEED: float = 0.0  # minimum backward speed [m/s]
@@ -79,7 +79,7 @@ class mpc_config:
     OBS_RADIUS: float = 0.25      # [m] obstacle radius approximation
     SAFETY_MARGIN: float = 0.10   # [m] extra clearance
     SAFE_RADIUS: float = 0.40
-    CBF_SLACK_WEIGHT: float = 1.0e2
+    CBF_SLACK_WEIGHT: float = 1.0e3
 
 
 
@@ -108,7 +108,7 @@ class MPC(Node):
         #self.map_name = 'map_2_f1tenth'
         #self.map_name = 'levine_centerline'
         # self.map_name = 'siccs_first_floor_1'
-        self.map_name = 'square_trajectory_small'
+        self.map_name = 'square_trajectory'
         
         self.enable_drive = True  # enable drive message publishing
 
@@ -123,9 +123,8 @@ class MPC(Node):
         self.pose_sub = self.create_subscription(PoseStamped if self.is_real else Odometry, pose_topic, self.pose_callback, 1)
         self.pose_sub  # prevent unused variable warning
 
-        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_527/odom", self.obs_1_callback, 10)
-        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_2_callback, 10)
-        #self.obs_3 = self.create_subscription(Odometry, "/optitrack/object_526/odom", self.obs_3_callback, 10)
+        self.obs_1 = self.create_subscription(Odometry, "/optitrack/object_528/odom", self.obs_1_callback, 10)
+        self.obs_2 = self.create_subscription(Odometry, "/optitrack/object_527/odom", self.obs_2_callback, 10)
 
         self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 1)
         self.drive_msg = AckermannDriveStamped()
@@ -188,12 +187,10 @@ class MPC(Node):
         self.rot_mat = np.identity(3)
     
         # initialize far away so the MPC is not blocked before OptiTrack publishes
-        self.obs_1_x = 1.0e6
-        self.obs_1_y = 1.0e6
-        self.obs_2_x = 1.0e6
-        self.obs_2_y = 1.0e6
-        self.obs_3_x = 1.0e6
-        self.obs_3_y = 1.0e6
+        self.obs_1_x = 1.0e2
+        self.obs_1_y = 1.0e2
+        self.obs_2_x = 1.0e2
+        self.obs_2_y = 1.0e2
 
 
     def obs_1_callback(self, msg):
@@ -204,9 +201,6 @@ class MPC(Node):
         self.obs_2_x = msg.pose.pose.position.x
         self.obs_2_y = msg.pose.pose.position.y
 
-    def obs_3_callback(self, msg):
-        self.obs_3_x = msg.pose.pose.position.x
-        self.obs_3_y = msg.pose.pose.position.y
 
     def pose_callback(self, pose_msg):
         # extract pose from ROS msg
@@ -243,7 +237,7 @@ class MPC(Node):
             steer_output = self.odelta_v[0]
             #speed_output = vehicle_state.v + self.oa[0] * self.config.DTK
             speed_output = vehicle_state.v + self.oa[0] * self.config.DTK
-            speed_output = max(0.2, speed_output)
+            speed_output = max(0.0, speed_output)
 
             self.drive_msg.drive.steering_angle = steer_output
             self.drive_msg.drive.speed = 1.0 * speed_output
@@ -442,7 +436,7 @@ class MPC(Node):
         constraints.append(c3)
 
         # state consraints
-        speed = self.xk[2, :]
+        speed = self.xk[2, 1:]
         c4_lower = self.config.MIN_SPEED <= speed
         c4_upper = speed <= self.config.MAX_SPEED
         constraints.append(c4_lower)
@@ -515,25 +509,19 @@ class MPC(Node):
         ref_traj[1, :] = cy[ind_list]
         ref_traj[2, :] = sp[ind_list]
 
-        angle_thres = 4.5
-        # https://edstem.org/us/courses/34340/discussion/2817574
-
-        for i in range(len(cyaw)):
-            if cyaw[i] - state.yaw > angle_thres:
-                cyaw[i] -= 2*np.pi
-            if state.yaw - cyaw[i] > angle_thres:
-                cyaw[i] += 2*np.pi
-
-        # cyaw[cyaw - state.yaw > angle_thres] = np.abs(
-        #     cyaw[cyaw - state.yaw > angle_thres] - (2 * np.pi)
-        # )
-        # cyaw[cyaw - state.yaw < -angle_thres] = np.abs(
-        #     cyaw[cyaw - state.yaw < -angle_thres] + (2 * np.pi)
-        # )
+        # 1. First, load the raw course yaw into the trajectory horizon
         ref_traj[3, :] = cyaw[ind_list]
 
-        print("ref_yaw ={}, cur_yaw ={}".format(cyaw[ind], state.yaw))
-        print(" ")
+        # 2. Then, fix the yaw wrap-around ONLY for the points in the local horizon
+        for i in range(self.config.TK + 1):
+            while ref_traj[3, i] - state.yaw > np.pi:
+                ref_traj[3, i] -= 2.0 * np.pi
+            while ref_traj[3, i] - state.yaw < -np.pi:
+                ref_traj[3, i] += 2.0 * np.pi
+
+        # 3. Print the FIXED reference yaw for debugging, not the raw cyaw
+        # print("ref_yaw ={}, cur_yaw ={}".format(ref_traj[3, 0], state.yaw))
+        # print(" ")
 
         return ref_traj
 
@@ -611,7 +599,7 @@ class MPC(Node):
 
 
 
-    def mpc_prob_solve(self, ref_traj, path_predict, x0):
+    def mpc_prob_solve(self, ref_traj, path_predict, x0, od):
         self.x0k.value = x0
 
         A_block = []
@@ -619,7 +607,7 @@ class MPC(Node):
         C_block = []
         for t in range(self.config.TK):
             A, B, C = self.get_model_matrix(
-                path_predict[2, t], path_predict[3, t], 0.0
+                path_predict[2, t], path_predict[3, t], od[t]
             )
             A_block.append(A)
             B_block.append(B)
@@ -666,7 +654,16 @@ class MPC(Node):
 
         # Solve the optimization problem in CVXPY
         # Solver selections: cvxpy.OSQP; cvxpy.GUROBI
-        self.MPC_prob.solve(solver=cvxpy.OSQP, verbose=False, warm_start=True)
+        self.MPC_prob.solve(solver=cvxpy.OSQP, verbose=True, warm_start=True)
+        # self.MPC_prob.solve(
+        #     solver=cvxpy.OSQP, 
+        #     verbose=False, 
+        #     warm_start=True, 
+        #     eps_abs=1e-3,  # Relaxed from 1e-5
+        #     eps_rel=1e-3,  # Relaxed from 1e-5
+        #     max_iter=2000
+        # )
+
 
         if (
             self.MPC_prob.status == cvxpy.OPTIMAL
@@ -740,7 +737,7 @@ class MPC(Node):
 
         # Run the MPC optimization: Create and solve the optimization problem
         mpc_a, mpc_delta, mpc_x, mpc_y, mpc_yaw, mpc_v = self.mpc_prob_solve(
-            ref_path, path_predict, x0
+            ref_path, path_predict, x0, od
         )
         
         # mpc_a, mpc_delta, mpc_x, mpc_y, mpc_yaw, mpc_v = self.mpc_prob_solve(
@@ -812,4 +809,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
